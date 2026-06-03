@@ -4,15 +4,16 @@ UMMD: Unique Maximum Mean Discrepancy
 """
 
 import time
+from tracemalloc import start
 from scipy.spatial.distance import cdist, pdist
 import numpy as np
 
 
 def timer(func):
     def wrapper(*args, **kwargs):
-        start = time.time()
+        start = time.perf_counter()
         res = func(*args, **kwargs)
-        end = time.time()
+        end = time.perf_counter()
         wrapper.time_taken = end - start
         return res
     return wrapper
@@ -56,8 +57,7 @@ def calc_MMD(K: np.array, s: np.array):
 
 
 
-@timer
-def perm_MMD(K, s, n_permutations=999, seed=11):
+def perm_MMD(K, s, rng, n_permutations=999):
     """
     Calculates the biased MMD statistic for n_permutations given a kernel distance matrix and permuting a sample weighting vector.
 
@@ -68,15 +68,13 @@ def perm_MMD(K, s, n_permutations=999, seed=11):
     returns: res: np.array
         MMD values for each tested bandwidth of shape [n_permutations, bandwidths]
     """
-    rng = np.random.default_rng(seed)
     S = np.repeat(s[np.newaxis, :], repeats=n_permutations, axis=0) # [permutations, m + n]
     S = rng.permuted(S, axis=1)                                  
     perms = np.sum((S @ K) * S, 2)                                  # [bandwidths, permutations]
     return np.moveaxis(perms, 1, 0)                                 # [permutations, bandwidths]
 
 
-@timer
-def perm_uMMD(K, x_idx, y_idx, n_permutations=999, seed=11):
+def perm_uMMD(K, x_idx, y_idx, rng, n_permutations=999):
     """
     Calculates the biased MMD statistic for n_permutations given a kernel distance matrix and permuting a sample weighting vector.
 
@@ -87,7 +85,6 @@ def perm_uMMD(K, x_idx, y_idx, n_permutations=999, seed=11):
     returns: res: np.array
         MMD values for each tested bandwidth of shape [n_permutations, bandwidths]
     """
-    rng = np.random.default_rng(seed)
 
     xy_idx = np.concatenate((x_idx, y_idx))
     m = len(x_idx)
@@ -155,7 +152,7 @@ def cauchy_combination(p_vals, weight_distribution='uniform'):
     return cauchy_p
 
 
-
+@timer
 def generate_ummd_input(x, y):
     """
     """
@@ -167,7 +164,7 @@ def generate_ummd_input(x, y):
 
 
 @timer
-def MMD(x, y, unique=True, bandwidths=None, n_permutations=999, cauchy_weighting="centered", seed=11):
+def MMD(x, y, unique=True, bandwidths=None, n_permutations=999, perm_batch_size=999, cauchy_weighting="centered", seed=11):
     """
     Calculates the MMD of two distributions with optional p_values.
 
@@ -182,6 +179,7 @@ def MMD(x, y, unique=True, bandwidths=None, n_permutations=999, cauchy_weighting
             Each sigma is converted internally to an RBF gamma via gamma = 1 / (2 * sigma**2),
             i.e. the kernel is k(x, y) = exp(-||x - y||**2 / (2 * sigma**2)). Default: None.
         n_permuations: (int) number of permutations to approximate p-value. Default: 999.
+        perm_batch_size: (int) number of permutations to calculate in each batch. Default: 999.
         cauchy_weighting: If testing multiple bandwidths use a cauchy correction to aggregate into a single p-value; 
             weighting options ["centered", "uniform", "left", "right", None]. 
             Default: "centered", None will return p-values per bandwidth.
@@ -196,18 +194,26 @@ def MMD(x, y, unique=True, bandwidths=None, n_permutations=999, cauchy_weighting
         'cauchy_method': method used for cauchy combination.
         'p-value': cauchy adjusted p-value.
     """
+
+    # Check for 2d array
+    if x.ndim == 1:
+        x = x[:, None]
+    if y.ndim == 1:
+        y = y[:, None]
+
+
     m = len(x)
     n = len(y)
 
     xy = np.concatenate((x, y), axis=0)     # [(m + n), d]
 
-    # Resolve bandwidths.
-    if isinstance(bandwidths, (int, np.integer)):
+    # Resolve bandwidths
+    if bandwidths is None or bandwidths == "median" or bandwidths <= 1:
+        bandwidths = np.array([np.median(pdist(np.unique(xy, axis=0), metric='euclidean'))])
+    elif isinstance(bandwidths, (int, np.integer)):
         bandwidths = get_bandwidths(np.unique(xy, axis=0), n=bandwidths)
     elif isinstance(bandwidths, np.ndarray):
         assert bandwidths.ndim == 1, "Bandwidths must be a 1D array of bandwidths."
-    elif bandwidths is None or bandwidths == "median":
-        bandwidths = np.array([np.median(pdist(np.unique(xy, axis=0), metric='euclidean'))])
     else:
         raise ValueError("Bandwidths must be None, 'median', an int number of bandwidths to generate, or a 1D np.array of bandwidths.")
 
@@ -231,10 +237,6 @@ def MMD(x, y, unique=True, bandwidths=None, n_permutations=999, cauchy_weighting
         s = np.concatenate((s_x, s_y))          # [(m + n), ]
 
 
-
-    
-
-
     # Define results output dictionary
     res = {
         "bandwidths": bandwidths,
@@ -253,10 +255,18 @@ def MMD(x, y, unique=True, bandwidths=None, n_permutations=999, cauchy_weighting
         # NOTE: p-values will not be identical for a given seed and n_permutations between unique=True and unique=False.
         # The unique and brute-force paths sample the same permutation null but realize different draws at a given seed, 
         # so p-values differ by O(1/√B) Monte-Carlo error (independent of repeats); they converge with increasing n_permutations.
-        if unique:
-            perms = perm_uMMD(K, x_idx, y_idx, n_permutations, seed=seed)     # [permutations, bandwidths]
-        else:
-            perms = perm_MMD(K, s, n_permutations, seed=seed)                 # [permutations, bandwidths]
+        
+        batches = np.arange(0, n_permutations, perm_batch_size)
+        rng = np.random.default_rng(seed)
+        perms = np.empty((n_permutations, len(bandwidths)))  # [permutations, bandwidths]
+
+        # Batch permutations
+        for batch_start in batches:
+            n_batch = min(perm_batch_size, n_permutations - batch_start)
+            if unique:
+                perms[batch_start:batch_start+n_batch] = perm_uMMD(K, x_idx, y_idx, rng=rng, n_permutations=n_batch)     # [batch_size, bandwidths]
+            else:
+                perms[batch_start:batch_start+n_batch] = perm_MMD(K, s, rng=rng, n_permutations=n_batch)                 # [batch_size, bandwidths]
 
         p_values = (np.sum(perms.round(10) >= obs.round(10), axis=0) + 1) / (n_permutations + 1)   # [bandwidths, ]
         res['p-values_per_bandwidth'] = p_values.round(6)
