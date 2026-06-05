@@ -3,7 +3,7 @@
 Maximum Mean Discrepancy (MMD) is a kernel-based test for whether two samples
 are drawn from the same distribution. The naive kernel matrix costs O(N^2) in
 time and memory; this implementation collapses repeated observations and works
-over the U unique values instead, giving O(U^2), which can be a huge improvement 
+over the U unique values instead, giving O(U^2), which can be a huge improvement
 for data with many repeated values. Significance is assessed by permutation, with optional
 testing over multiple RBF bandwidths aggregated via the Cauchy combination test.
 
@@ -66,7 +66,7 @@ def kernel_matrix(x, y, gammas):
     Returns
     -------
     np.ndarray, shape (b, m, n)
-        Kernel matrices for each bandwidth, where ``b`` is the number of bandwidths, 
+        Kernel matrices for each bandwidth, where ``b`` is the number of bandwidths,
         ``m`` is the number of samples in ``x``, and ``n`` is the number of samples in ``y``.
 
     Raises
@@ -133,7 +133,7 @@ def perm_MMD(K, s, rng, n_permutations=999):
 def perm_uMMD(K, x_idx, y_idx, rng, n_permutations=0):
     """Calculate the biased MMD statistic for n_permutations of unique values.
 
-    Requires a np.bincount across u * n_permutations over perm_MMD function; this adds time and space complexity 
+    Requires a np.bincount across u * n_permutations over perm_MMD function; this adds time and space complexity
     but reclaims improved efficiency in cases with many repeated values.
 
     Parameters
@@ -185,8 +185,8 @@ def perm_uMMD(K, x_idx, y_idx, rng, n_permutations=0):
 
 def get_bandwidths(xy, n=10):
     """Generate bandwidths for the RBF kernel based on the pairwise distances of the pooled sample.
-    
-    Generate a geometric grid of n sigma length-scales spanning the range of pairwise Euclidean distances 
+
+    Generate a geometric grid of n sigma length-scales spanning the range of pairwise Euclidean distances
     across all samples. See Schrab et al. (2023) MMD Aggregated Two-Sample Test for motivation of this formula.
 
     Parameters
@@ -310,10 +310,10 @@ def MMD(
     """Calculate the MMD of two distributions.
 
     Maximum Mean Discrepancy (MMD) is a kernel-based distance measure between distributions allowing identification in second moment differences.
-    The backbone of the test is based on kernel distance matrices, namely following the formula ``MMD^2 = K_x + K_y - 2K_xy`` 
-    where ``K_x`` and ``K_y`` are kernel distances between each entry of X and Y distributions respectively, 
+    The backbone of the test is based on kernel distance matrices, namely following the formula ``MMD^2 = K_x + K_y - 2K_xy``
+    where ``K_x`` and ``K_y`` are kernel distances between each entry of X and Y distributions respectively,
     and ``K_xy`` is the cross-kernel distance matrix between each value of X with each value of Y.
-    The kernel matrix itself requires O(N^2) time and space complexity per bandwidth, which can be reduced to O(U^2) 
+    The kernel matrix itself requires O(N^2) time and space complexity per bandwidth, which can be reduced to O(U^2)
     where U is the number of unique values across both distributions with the unique value optimisation.
 
     Parameters
@@ -322,7 +322,7 @@ def MMD(
         First distribution with ``m`` samples and ``d`` dimensions.
     y : np.ndarray, shape (n, d)
         Second distribution with ``n`` samples and ``d`` dimensions.
-    unique : bool 
+    unique : bool
         Whether to use the unique value optimisation, which can be much faster for discrete data with many repeated values. Default: True.
     bandwidths : str or int or np.ndarray, shape (b,)
         Kernel bandwidths as sigma length-scales (same units as the data). One of:
