@@ -1,13 +1,33 @@
 [project]
 name = "ummd"
 version = "0.1.0"
-description = "Add your description here"
+description = "Efficient Maximum Mean Discrepancy two-sample testing for data with duplicate observations, scaling with unique values rather than sample size."
+authors = [
+    { name = "Morgan Thomas", email = "morgan.thomas@ed.ac.uk" },
+]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["statistics", "hypothesis-testing", "mmd", "maximum-mean-discrepancy", "two-sample-test", "kernel-methods"]
 readme = "README.md"
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy>=2.4.6",
     "scipy>=1.17.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pshdrugdiscoveryai/ummd"
+Repository = "https://github.com/pshdrugdiscoveryai/ummd"
+Issues = "https://github.com/pshdrugdiscoveryai/ummd/issues"
 
 [project.optional-dependencies]
 dev = [
