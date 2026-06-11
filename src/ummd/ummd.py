@@ -33,6 +33,7 @@ import time
 from scipy.spatial.distance import cdist, pdist
 import numpy as np
 import functools
+import warnings
 
 
 def timer(func):
@@ -361,6 +362,11 @@ def MMD(
     ValueError
         If bandwidths parameter is invalid.
         If cauchy_weighting parameter is invalid.
+
+    Warns
+    -----
+    UserWarning
+        If all values across both distributions are identical.
     """
 
     # Check for 2d array
@@ -373,6 +379,21 @@ def MMD(
     n = len(y)
 
     xy = np.concatenate((x, y), axis=0)  # [(m + n), d]
+
+    # Handle case when all values are identical
+    if len(np.unique(xy, axis=0)) == 1:
+        warnings.warn(
+            "All values are identical across both distributions. MMD will be 0 and p-value 1. Skipping computation.",
+            UserWarning,
+        )
+        return {
+            "bandwidths": np.array([np.nan]),
+            "n_permutations": np.nan,
+            "biased_MMD": np.array([0.0]),
+            "p-values_per_bandwidth": np.array([1.0]),
+            "cauchy_method": None,
+            "p-value": np.array([1.0]),
+        }
 
     # Resolve bandwidths
     if isinstance(bandwidths, np.ndarray):
