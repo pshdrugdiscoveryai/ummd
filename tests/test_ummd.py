@@ -221,3 +221,14 @@ def test_runs_with_only_one_unique_value():
 
     assert np.allclose(res["biased_MMD"], 0.0)
     assert np.allclose(res["p-value"], 1.0)
+
+
+def test_one_bandwidth_returns_p_val(discrete_distributions):
+    # Arrange
+    x, y = discrete_distributions
+
+    # Act
+    res = MMD(x, y, unique=True, bandwidths=1, n_permutations=99)
+
+    # Assert
+    assert np.all((res["p-value"] >= 0) & (res["p-value"] <= 1))
