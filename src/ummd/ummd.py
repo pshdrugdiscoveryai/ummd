@@ -355,7 +355,7 @@ def MMD(
             - biased_MMD: MMD statistic per bandwidth.
             - p-values_per_bandwidth: permuation derived p-values for each bandwidth tested.
             - cauchy_method: method used for Cauchy combination.
-            - p-value: Cauchy adjusted p-value.
+            - p-value: Cauchy adjusted p-value across bandwidths if cauchy_weighting is not None, otherwise the same as p-values_per_bandwidth.
 
     Raises
     ------
@@ -483,5 +483,7 @@ def MMD(
             res["p-value"] = cauchy_combination(
                 p_values, weight_distribution=cauchy_weighting
             )
+        else:
+            res["p-value"] = res["p-values_per_bandwidth"]
 
     return res
