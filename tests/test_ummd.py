@@ -1,5 +1,6 @@
 import numpy as np
 from ummd import MMD
+from scipy.spatial.distance import cdist
 import pytest
 
 
@@ -232,3 +233,69 @@ def test_one_bandwidth_returns_p_val(discrete_distributions):
 
     # Assert
     assert np.all((res["p-value"] >= 0) & (res["p-value"] <= 1))
+
+
+def test_kernel_function_smoke(discrete_distributions):
+    # Arrange
+    x, y = discrete_distributions
+
+    # Act
+    res = MMD(x, y, unique=True, bandwidths=1, n_permutations=99, kernel_fn="gaussian")
+
+    # Assert
+    assert np.all(np.isfinite(res["biased_MMD"]))
+
+
+def test_custom_kernel_matches_builtin_gaussian(discrete_distributions):
+    # Arrange
+    x, y = discrete_distributions
+
+    def custom_rbf(x, y, bandwidths):
+        gammas = 1.0 / (2.0 * bandwidths**2)
+        D = cdist(x, y, metric="sqeuclidean")
+        return np.exp(-gammas[:, None, None] * D[None, :, :])
+
+    # Act
+    res_custom = MMD(
+        x, y, unique=True, bandwidths=5, n_permutations=0, kernel_fn=custom_rbf
+    )
+    res_builtin = MMD(
+        x, y, unique=True, bandwidths=5, n_permutations=0, kernel_fn="gaussian"
+    )
+
+    # Assert
+    np.testing.assert_allclose(res_custom["biased_MMD"], res_builtin["biased_MMD"])
+
+
+def test_fails_with_invalid_kernel_fn(discrete_distributions):
+    # Arrange
+    x, y = discrete_distributions
+
+    # Act, assert
+    with pytest.raises(ValueError):
+        MMD(x, y, unique=True, bandwidths=1, n_permutations=0, kernel_fn="banana")
+
+    with pytest.raises(ValueError):
+        MMD(x, y, unique=True, bandwidths=1, n_permutations=0, kernel_fn=123)
+
+    def bad_kernel(x, y, bandwidths):
+        return np.ones((len(x), len(y)))  # missing the leading bandwidth axis
+
+    # Act, assert
+    with pytest.raises(ValueError):
+        MMD(x, y, unique=True, bandwidths=1, n_permutations=0, kernel_fn=bad_kernel)
+
+
+def test_custom_kernel_returns_expected(discrete_distributions):
+    # Arrange
+    x, y = discrete_distributions
+
+    def custom_kernel(x, y, bandwidths):
+        return np.zeros((1, len(x), len(y)))  # missing the leading bandwidth axis
+
+    res = MMD(
+        x, y, unique=True, bandwidths=1, n_permutations=0, kernel_fn=custom_kernel
+    )
+
+    # Act, assert
+    assert np.isclose(res["biased_MMD"], 0.0)
