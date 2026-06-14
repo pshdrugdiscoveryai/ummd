@@ -29,60 +29,12 @@ Schrab et al. (2023), MMD Aggregated Two-Sample Test.
 Liu and Xie (2019), Cauchy Combination Test.
 """
 
-import time
-from scipy.spatial.distance import cdist, pdist
+from scipy.spatial.distance import pdist
 import numpy as np
-import functools
 import warnings
 
-
-def timer(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.perf_counter()
-        res = func(*args, **kwargs)
-        end = time.perf_counter()
-        wrapper.time_taken = end - start
-        return res
-
-    return wrapper
-
-
-@timer
-def kernel_matrix(x, y, gammas):
-    """Compute the RBF (Gaussian) kernel matrix between two distributions.
-
-    One kernel matrix is produced per bandwidth, using squared Euclidean distance
-    with gamma = 1/(2*sigma**2), i.e. k(a, b) = exp(-gamma * ||a - b||**2).
-
-    Parameters
-    ----------
-    x : np.ndarray, shape (m, d)
-        First distribution with ``m`` samples and ``d`` dimensions.
-    y : np.ndarray, shape (n, d)
-        Second distribution with ``n`` samples and ``d`` dimensions.
-    gammas : np.ndarray, shape (b,)
-        1-D array of RBF kernel precisions, one per bandwidth.
-
-    Returns
-    -------
-    np.ndarray, shape (b, m, n)
-        Kernel matrices for each bandwidth, where ``b`` is the number of bandwidths,
-        ``m`` is the number of samples in ``x``, and ``n`` is the number of samples in ``y``.
-
-    Raises
-    ------
-    AssertionError
-        If ``gammas`` is not a 1D array.
-    """
-
-    assert isinstance(gammas, np.ndarray) and gammas.ndim == 1, (
-        "Gammas must be a 1D array of bandwidths."
-    )
-
-    D = cdist(x, y, metric="sqeuclidean")  # [m, n]
-    K = np.exp(-gammas[:, None, None] * D[None, :, :])  # [bandwidths, m, n]
-    return K
+from ._utils import timer
+from .kernels import resolve_kernel
 
 
 @timer
@@ -302,6 +254,7 @@ def MMD(
     x,
     y,
     unique=True,
+    kernel_fn="gaussian",
     bandwidths="median",
     n_permutations=0,
     perm_batch_size=999,
@@ -325,6 +278,15 @@ def MMD(
         Second distribution with ``n`` samples and ``d`` dimensions.
     unique : bool
         Whether to use the unique value optimisation, which can be much faster for discrete data with many repeated values. Default: True.
+    kernel_fn : str or callable
+        Kernel used to build the (stacked) kernel matrix. One of:
+        - "gaussian": the built-in RBF kernel (default).
+        - callable: ``kernel_fn(x, y, bandwidths) -> np.ndarray`` of shape
+          ``(len(bandwidths), m, n)``, i.e. one kernel matrix per bandwidth. The
+          callable builds the entire stacked matrix so it can be vectorised/optimised
+          freely. ``bandwidths`` is the 1-D array of sigma length-scales resolved by
+          MMD; the kernel owns how it interprets them (and may ignore them, returning
+          a single (1, m, n) matrix).
     bandwidths : str or int or np.ndarray, shape (b,)
         Kernel bandwidths as sigma length-scales (same units as the data). One of:
         - "median": median pairwise Euclidean distance of the pooled unique sample (default).
@@ -395,6 +357,9 @@ def MMD(
             "p-value": np.array([1.0]),
         }
 
+    # Resolve kernel function
+    kernel_matrix = resolve_kernel(kernel_fn)
+
     # Resolve bandwidths
     if isinstance(bandwidths, np.ndarray):
         if bandwidths.ndim != 1:
@@ -413,23 +378,31 @@ def MMD(
     else:
         raise ValueError("Bandwidths must be None, 'median', an int, or a 1D np.array.")
 
-    # Convert bandwidths to gammas
-    gammas = 1.0 / (2.0 * bandwidths**2)
-
     # Calulate MMD
     if unique:
         unique_values, x_idx, y_idx = generate_ummd_input(x, y)  # [u, d], [m, ], [n, ]
         u = len(unique_values)
-        K = kernel_matrix(unique_values, unique_values, gammas)  # [bandwidths, u, u]
+        K = kernel_matrix(
+            unique_values, unique_values, bandwidths
+        )  # [bandwidths, u, u]
         s_x = np.bincount(x_idx, minlength=u) / m  # [u, ]
         s_y = np.bincount(y_idx, minlength=u) / n  # [u, ]
         s = s_x - s_y  # [u, ]
     else:
-        K = kernel_matrix(xy, xy, gammas)  # [bandwidths, (m + n), (m + n)]
+        K = kernel_matrix(xy, xy, bandwidths)  # [bandwidths, (m + n), (m + n)]
 
         s_x = np.ones(m) / m  # [m, ]
         s_y = np.ones(n) / n * -1  # [n, ]
         s = np.concatenate((s_x, s_y))  # [(m + n), ]
+
+    # Validate kernel output: one (m, n) kernel matrix per bandwidth
+    K = np.asarray(K)
+    if K.ndim != 3 or K.shape[0] != len(bandwidths):
+        raise ValueError(
+            "kernel_fn must return a stacked kernel matrix of shape "
+            f"(len(bandwidths), m, n); expected {len(bandwidths)} matrices "
+            f"but got an array with shape {K.shape}."
+        )
 
     # Define results output dictionary
     res = {

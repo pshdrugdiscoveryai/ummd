@@ -36,6 +36,31 @@ MMD returns a dictionary with:
 - `p-value`: a single Cauchy-combined p-value across the bandwidths
 - `bandwidths`: the kernel bandwidths actually used
 
+## Custom kernels
+
+By default `MMD` uses a Gaussian (RBF) kernel. You can supply your own via
+`kernel_fn`. A custom kernel should build the *entire* stacked kernel matrix. This is to allow control of how it is vectorised/optimised:
+
+```python
+import numpy as np
+from scipy.spatial.distance import cdist
+from ummd import MMD
+
+def my_rbf(x, y, bandwidths):
+    gammas = 1.0 / (2.0 * bandwidths**2)
+    D = cdist(x, y, metric="sqeuclidean")
+    return np.exp(-gammas[:, None, None] * D[None, :, :])  # (len(bandwidths), m, n)
+
+result = MMD(x, y, kernel_fn=my_rbf, bandwidths=10, n_permutations=999)
+```
+
+The contract is `kernel_fn(x, y, bandwidths) -> ndarray` of shape
+`(len(bandwidths), m, n)`, one kernel matrix per bandwidth. `bandwidths` is the
+1-D array of sigma length-scales that `MMD` resolves from the `bandwidths=`
+argument (median heuristic, geometric grid, or an explicit array); your kernel
+decides how to interpret them, and may ignore them entirely and return a single
+`(1, m, n)` matrix.
+
 ## Why uMMD
 
 A standard MMD test builds an `N x N` kernel matrix, so cost grows with sample size. When your data has many repeated values (counts, categories, discretised measurements), uMMD instead works over the `u` unique values, where `u << n`, giving the same test at a fraction of the cost.
