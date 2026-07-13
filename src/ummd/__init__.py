@@ -1,4 +1,11 @@
-from .ummd import MMD, calc_MMD, perm_MMD, perm_uMMD, generate_ummd_input
+from .ummd import (
+    MMD,
+    calc_MMD,
+    perm_MMD,
+    perm_uMMD,
+    saddlepoint_pvalue,
+    generate_ummd_input,
+)
 from .kernels import gaussian_kernel_matrix
 
 __all__ = [
@@ -7,5 +14,6 @@ __all__ = [
     "calc_MMD",
     "perm_MMD",
     "perm_uMMD",
+    "saddlepoint_pvalue",
     "generate_ummd_input",
 ]

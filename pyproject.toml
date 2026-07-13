@@ -1,6 +1,6 @@
 [project]
 name = "ummd"
-version = "0.2.0"
+version = "0.3.0"
 description = "Efficient Maximum Mean Discrepancy two-sample testing for data with duplicate observations, scaling with unique values rather than sample size."
 authors = [
     { name = "Morgan Thomas", email = "morgan.thomas@ed.ac.uk" },
@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
+    "statsmodels>=0.14.6",
 ]
 
 [project.urls]
