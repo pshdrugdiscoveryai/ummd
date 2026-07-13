@@ -4,8 +4,9 @@ Maximum Mean Discrepancy (MMD) is a kernel-based test for whether two samples
 are drawn from the same distribution. The naive kernel matrix costs O(N^2) in
 time and memory; this implementation collapses repeated observations and works
 over the U unique values instead, giving O(U^2), which can be a huge improvement
-for data with many repeated values. Significance is assessed by permutation, with optional
-testing over multiple RBF bandwidths aggregated via the Cauchy combination test.
+for data with many repeated values. Significance is assessed either by permutation or by an
+analytical saddlepoint approximation to the permutation null, with optional testing over
+multiple RBF bandwidths aggregated via the Cauchy combination test.
 
 Main entry point
 ----------------
@@ -27,9 +28,12 @@ References
 Gretton et al. (2012), A Kernel Two-Sample Test.
 Schrab et al. (2023), MMD Aggregated Two-Sample Test.
 Liu and Xie (2019), Cauchy Combination Test.
+Kuonen (1999), Saddlepoint Approximations for Distributions of Quadratic Forms in Normal Variables.
 """
 
 from scipy.spatial.distance import pdist
+from scipy.optimize import brentq
+from scipy.special import ndtr
 import numpy as np
 import warnings
 
@@ -134,6 +138,140 @@ def perm_uMMD(K, x_idx, y_idx, rng, n_permutations=0):
 
     perms = np.sum((U @ K) * U, 2)  # [bandwidths, permutations]
     return np.moveaxis(perms, 1, 0)  # [permutations, bandwidths]
+
+
+def _lugannani_rice(weights, t):
+    """Upper-tail probability ``P(Q >= t)`` for a non-negatively weighted sum of independent
+    chi-square variables with one degree of freedom, ``Q = sum_i weights_i * Z_i**2``.
+
+    Uses the Lugannani-Rice saddlepoint approximation as applied to quadratic forms by
+    Kuonen (1999). The cumulant generating function of ``Q`` is
+    ``L(z) = -0.5 * sum_i log(1 - 2 * weights_i * z)``; the saddlepoint ``z_hat`` solves
+    ``L'(z_hat) = t`` and the tail probability follows in closed form. Near the mean the
+    formula has a removable singularity, handled by the limiting skewness correction.
+
+    Parameters
+    ----------
+    weights : np.ndarray, shape (r,)
+        Mixture weights (kernel eigenvalues). Non-positive entries are treated as numerical
+        zeros and dropped.
+    t : float
+        Point at which the upper tail is evaluated (the observed statistic).
+
+    Returns
+    -------
+    float
+        Approximate ``P(Q >= t)``, clipped to ``[0, 1]``.
+    """
+    lam = np.asarray(weights, dtype=float)
+    if lam.size:
+        lam = lam[
+            lam > 1e-10 * np.max(lam)
+        ]  # drop the (near-)zero centering eigenvalues
+    if lam.size == 0:  # degenerate null: Q is identically 0
+        return 1.0 if t <= 0 else 0.0
+    if t <= 0:  # statistic below the support of Q
+        return 1.0
+
+    mean = lam.sum()  # E[Q] = sum_i weights_i (one dof each)
+
+    def dcgf(z):  # L'(z)
+        return np.sum(lam / (1.0 - 2.0 * lam * z))
+
+    def d2cgf(z):  # L''(z)
+        return np.sum(2.0 * (lam / (1.0 - 2.0 * lam * z)) ** 2)
+
+    def cgf(z):  # L(z)
+        return -0.5 * np.sum(np.log1p(-2.0 * lam * z))
+
+    def skewness_tail():
+        # Limiting tail at the removable singularity z_hat -> 0 (t == E[Q]).
+        s2 = np.sum(lam**2)
+        s3 = np.sum(lam**3)
+        skew = 8.0 * s3 / (2.0 * s2) ** 1.5  # L'''(0) / L''(0)**1.5
+        return float(0.5 - skew / (6.0 * np.sqrt(2.0 * np.pi)))
+
+    if np.isclose(t, mean):
+        return skewness_tail()
+
+    # Bracket and solve the saddlepoint equation L'(z) = t. L' increases from 0 (at z -> -inf)
+    # to +inf at the right edge z = 1 / (2 * max weight) of the convergence strip.
+    zeta_hi = 0.5 / lam.max()
+    if t > mean:
+        eps = 1e-6
+        lo, hi = 0.0, zeta_hi * (1.0 - eps)
+        while (
+            dcgf(hi) <= t and eps > 1e-15
+        ):  # push toward the singularity for extreme tails
+            eps *= 0.1
+            hi = zeta_hi * (1.0 - eps)
+    else:
+        lo, hi = -1.0, 0.0
+        while dcgf(lo) > t:  # expand until L'(lo) drops below t
+            lo *= 2.0
+    z_hat = brentq(lambda z: dcgf(z) - t, lo, hi, xtol=1e-12, rtol=1e-14)
+
+    w = np.sign(z_hat) * np.sqrt(max(2.0 * (z_hat * t - cgf(z_hat)), 0.0))
+    v = z_hat * np.sqrt(d2cgf(z_hat))
+    if abs(w) < 1e-9 or abs(v) < 1e-9:  # too close to the mean for the stable form
+        return skewness_tail()
+
+    phi = np.exp(-0.5 * w * w) / np.sqrt(2.0 * np.pi)
+    p = ndtr(-w) + phi * (1.0 / v - 1.0 / w)
+    return float(min(max(p, 0.0), 1.0))
+
+
+def saddlepoint_pvalue(K, counts, m, n, obs):
+    """Analytical MMD p-values per bandwidth via the Kuonen (1999) saddlepoint approximation.
+
+    Under the permutation null the biased MMD statistic ``T = s @ K @ s`` behaves like a
+    non-negatively weighted sum of independent chi-square variables with one degree of freedom,
+    ``T ~ sum_i lambda_i * Z_i**2``. The weights ``lambda_i`` are the eigenvalues of the
+    count-weighted, doubly-centered kernel, scaled by ``N / (m * n * (N - 1))`` with ``N = m + n``;
+    the Lugannani-Rice saddlepoint formula then gives the upper tail ``P(T >= obs)`` in closed
+    form, replacing the permutation loop.
+
+    The weights are obtained from ``K_b @ G`` where ``G = diag(counts) - counts counts^T / N`` is
+    the count-weighted centering operator. Because ``G`` and the kernel are indexed by the ``u``
+    unique values, the eigendecomposition stays O(u**3) rather than O(N**3), preserving the
+    unique-value speed-up. This yields the same weights (and hence p-values) whether the caller
+    ran the unique-value or brute-force path.
+
+    Parameters
+    ----------
+    K : np.ndarray, shape (b, u, u)
+        Stacked kernel matrix over the ``u`` unique values, one matrix per bandwidth.
+    counts : np.ndarray, shape (u,)
+        Total number of observations taking each unique value (sums to ``N = m + n``).
+    m : int
+        Number of samples in the first distribution.
+    n : int
+        Number of samples in the second distribution.
+    obs : np.ndarray, shape (b,)
+        Observed biased MMD statistic per bandwidth.
+
+    Returns
+    -------
+    np.ndarray, shape (b,)
+        Analytical p-values, one per bandwidth.
+    """
+    counts = np.asarray(counts, dtype=float)
+    N = m + n
+
+    # G = diag(counts) - counts counts^T / N is symmetric PSD with null vector 1. Factor it once
+    # as G = L L^T so each per-bandwidth solve reduces to the symmetric eigenproblem L^T K_b L,
+    # which shares the non-zero spectrum of K_b @ G.
+    G = np.diag(counts) - np.outer(counts, counts) / N
+    gvals, gvecs = np.linalg.eigh(G)
+    gvals = np.clip(gvals, 0.0, None)
+    L = gvecs * np.sqrt(gvals)  # scale eigenvector columns; G == L @ L.T
+    scale = N / (m * n * (N - 1))
+
+    pvals = np.empty(K.shape[0])
+    for b in range(K.shape[0]):
+        weights = scale * np.linalg.eigvalsh(L.T @ K[b] @ L)
+        pvals[b] = _lugannani_rice(weights, float(obs[b]))
+    return pvals
 
 
 def get_bandwidths(xy, n=10):
@@ -256,6 +394,7 @@ def MMD(
     unique=True,
     kernel_fn="gaussian",
     bandwidths="median",
+    method="permutation",
     n_permutations=0,
     perm_batch_size=999,
     cauchy_weighting="uniform",
@@ -293,8 +432,14 @@ def MMD(
         - int: generate that many bandwidths spanning the pooled pairwise distances (see get_bandwidths).
         - 1-D np.array: the sigma values to test.
         Each sigma is converted internally to an RBF gamma via gamma = 1 / (2 * sigma**2).
+    method : str
+        How to obtain p-values from the null distribution. One of:
+        - "permutation": Monte-Carlo permutation p-values (default); requires ``n_permutations > 0``.
+        - "saddlepoint": analytical p-values via the Kuonen (1999) saddlepoint approximation to
+          the weighted-chi-square permutation null. No sampling, so ``n_permutations`` is ignored
+          and results are deterministic. See saddlepoint_pvalue.
     n_permutations : int
-        number of permutations to approximate p-value. Default: 0.
+        number of permutations to approximate p-value; only used when method="permutation". Default: 0.
     perm_batch_size : int
         number of permutations to calculate in each batch. Default: 999.
     cauchy_weighting: str or None
@@ -315,7 +460,8 @@ def MMD(
             - bandwidths: bandwidths used in the RBF kernel.
             - n_permutations: number of permutations used to approximate p-value.
             - biased_MMD: MMD statistic per bandwidth.
-            - p-values_per_bandwidth: permuation derived p-values for each bandwidth tested.
+            - p-values_per_bandwidth: p-values for each bandwidth tested (permutation- or
+              saddlepoint-derived depending on ``method``).
             - cauchy_method: method used for Cauchy combination.
             - p-value: Cauchy adjusted p-value across bandwidths if cauchy_weighting is not None, otherwise the same as p-values_per_bandwidth.
 
@@ -323,6 +469,7 @@ def MMD(
     ------
     ValueError
         If bandwidths parameter is invalid.
+        If method parameter is invalid.
         If cauchy_weighting parameter is invalid.
 
     Warns
@@ -336,6 +483,9 @@ def MMD(
         x = x[:, None]
     if y.ndim == 1:
         y = y[:, None]
+
+    if method not in ("permutation", "saddlepoint"):
+        raise ValueError("method must be 'permutation' or 'saddlepoint'.")
 
     m = len(x)
     n = len(y)
@@ -385,15 +535,17 @@ def MMD(
         K = kernel_matrix(
             unique_values, unique_values, bandwidths
         )  # [bandwidths, u, u]
-        s_x = np.bincount(x_idx, minlength=u) / m  # [u, ]
-        s_y = np.bincount(y_idx, minlength=u) / n  # [u, ]
-        s = s_x - s_y  # [u, ]
+        c_x = np.bincount(x_idx, minlength=u)  # [u, ]
+        c_y = np.bincount(y_idx, minlength=u)  # [u, ]
+        s = c_x / m - c_y / n  # [u, ]
+        counts = c_x + c_y  # [u, ] total observations per unique value
     else:
         K = kernel_matrix(xy, xy, bandwidths)  # [bandwidths, (m + n), (m + n)]
 
         s_x = np.ones(m) / m  # [m, ]
         s_y = np.ones(n) / n * -1  # [n, ]
         s = np.concatenate((s_x, s_y))  # [(m + n), ]
+        counts = np.ones(m + n)  # [(m + n), ] each observation is its own value
 
     # Validate kernel output: one (m, n) kernel matrix per bandwidth
     K = np.asarray(K)
@@ -409,6 +561,7 @@ def MMD(
         "bandwidths": bandwidths,
         "n_permutations": n_permutations,
         "biased_MMD": None,
+        "method": method,
         "p-values_per_bandwidth": None,
         "cauchy_method": cauchy_weighting,
         "p-value": None,
@@ -417,7 +570,12 @@ def MMD(
     obs = calc_MMD(K, s)  # [bandwidths, ]
     res["biased_MMD"] = obs
 
-    if n_permutations > 0:
+    p_values = None  # [bandwidths, ]
+    if method == "saddlepoint":
+        # Analytical p-values from the weighted-chi-square permutation null; no sampling.
+        p_values = saddlepoint_pvalue(K, counts, m, n, obs)
+        res["n_permutations"] = None
+    elif n_permutations > 0:
         # NOTE: p-values will not be identical for a given seed and n_permutations between unique=True and unique=False.
         # The unique and brute-force paths sample the same permutation null but realize different draws at a given seed,
         # so p-values differ by O(1/√B) Monte-Carlo error (independent of repeats); they converge with increasing n_permutations.
@@ -443,6 +601,8 @@ def MMD(
         p_values = (np.sum(perms.round(10) >= obs.round(10), axis=0) + 1) / (
             n_permutations + 1
         )  # [bandwidths, ]
+
+    if p_values is not None:
         res["p-values_per_bandwidth"] = p_values.round(6)
 
         # cauchy combination of p-values across bandwidths
