@@ -50,3 +50,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/ummd", "README.md", "LICENSE", "pyproject.toml"]
+
+[dependency-groups]
+dev = [
+    "twine>=6.2.0",
+]
