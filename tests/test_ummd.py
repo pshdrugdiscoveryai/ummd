@@ -1,6 +1,6 @@
 import numpy as np
 from ummd import MMD
-from ummd.ummd import _lugannani_rice
+from ummd.statistical_testing import _lugannani_rice
 from scipy.spatial.distance import cdist
 from scipy.stats import chi2
 import pytest
